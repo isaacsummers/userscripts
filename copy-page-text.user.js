@@ -1,15 +1,19 @@
 // ==UserScript==
 // @name         Clean Page Text Copier
 // @namespace    http://tampermonkey.net/
-// @version      1.4
-// @description  Expand all hidden/collapsed content and copy clean text. Toggle via extension. Draggable button.
+// @version      1.5
+// @description  Expand collapsed content and copy clean text. SPA/React-aware — waits for rendered content, handles client-side navigation. Draggable button.
 // @author       Isaac
 // @match        *://*/*
+// @match        *://*.ibm.com/*
 // @grant        none
 // ==/UserScript==
 
 (function () {
     'use strict';
+
+    // Minimum characters in a SPA container to consider the page loaded
+    const SPA_CONTENT_THRESHOLD = 100;
 
     const btn = document.createElement('button');
     btn.innerHTML = '📋 Copy All Text';
@@ -61,7 +65,7 @@
         btn.style.top = (e.clientY - dragOffsetY) + 'px';
     });
 
-    document.addEventListener('mouseup', (e) => {
+    document.addEventListener('mouseup', () => {
         if (!dragging) return;
         dragging = false;
         btn.style.cursor = 'grab';
@@ -97,27 +101,71 @@
         if (!moved) copyAll();
     });
 
-    function copyAll() {
+    // --- SPA navigation: cancel any in-progress retry loop on route change ---
+    let retryTimer = null;
+
+    function cancelRetry() {
+        if (retryTimer !== null) {
+            clearTimeout(retryTimer);
+            retryTimer = null;
+            btn.innerHTML = '📋 Copy All Text';
+            btn.style.background = '#6200ea';
+        }
+    }
+
+    const _pushState = history.pushState.bind(history);
+    history.pushState = function (...args) {
+        _pushState(...args);
+        cancelRetry();
+    };
+
+    const _replaceState = history.replaceState.bind(history);
+    history.replaceState = function (...args) {
+        _replaceState(...args);
+        cancelRetry();
+    };
+
+    window.addEventListener('popstate', cancelRetry);
+
+    // --- SPA root detection ---
+    // Common SPA mount-point selectors; checked in order of specificity
+    const SPA_SELECTORS = ['#react-app', '#app', '#root', '#__next', '#__nuxt'];
+
+    function getSpaRoot() {
+        for (const sel of SPA_SELECTORS) {
+            const el = document.querySelector(sel);
+            if (el && (el.innerText || '').trim().length >= SPA_CONTENT_THRESHOLD) {
+                return el;
+            }
+        }
+        return null;
+    }
+
+    function hasSpaContainer() {
+        return SPA_SELECTORS.some(sel => document.querySelector(sel));
+    }
+
+    // --- Text extraction ---
+    function extractText(root) {
         // Expand Bootstrap 3 + 4/5 collapses
-        document.querySelectorAll('.collapse').forEach(el => {
+        root.querySelectorAll('.collapse').forEach(el => {
             el.classList.add('in', 'show');
         });
 
         // Open all <details> elements
-        document.querySelectorAll('details').forEach(el => (el.open = true));
+        root.querySelectorAll('details').forEach(el => (el.open = true));
 
         // Strip [hidden] attributes
-        document.querySelectorAll('[hidden]').forEach(el => el.removeAttribute('hidden'));
+        root.querySelectorAll('[hidden]').forEach(el => el.removeAttribute('hidden'));
 
         // Unhide aria-hidden panels
-        document.querySelectorAll('[aria-hidden="true"]').forEach(el => {
+        root.querySelectorAll('[aria-hidden="true"]').forEach(el => {
             el.setAttribute('aria-hidden', 'false');
         });
 
-        // TreeWalker — grabs ALL text nodes including display:none
-        const skipTags = new Set(['script', 'style', 'noscript', 'head', 'meta', 'link']);
+        const skipTags = new Set(['script', 'style', 'noscript', 'svg', 'head', 'meta', 'link']);
         const walker = document.createTreeWalker(
-            document.body,
+            root,
             NodeFilter.SHOW_TEXT,
             {
                 acceptNode(node) {
@@ -137,10 +185,33 @@
         }
 
         // Deduplicate consecutive identical lines
-        const deduped = lines.filter((line, i) => line !== lines[i - 1]);
-        const output = deduped.join('\n');
+        return lines.filter((line, i) => line !== lines[i - 1]).join('\n');
+    }
 
-        // Copy to clipboard
+    // --- Copy logic ---
+    function copyAll(retryCount = 0) {
+        if (hasSpaContainer()) {
+            const spaRoot = getSpaRoot();
+            if (!spaRoot) {
+                // Content not yet rendered — retry up to 6 times (~9s total)
+                if (retryCount < 6) {
+                    flash('⏳ Loading…', '#e65100');
+                    retryTimer = setTimeout(() => copyAll(retryCount + 1), 1500);
+                    return;
+                }
+                // Timed out — fall back to the full document body
+                flash('⚠️ Copied (partial)', '#b71c1c', 3000);
+                doWrite(extractText(document.body));
+                return;
+            }
+            doWrite(extractText(spaRoot));
+        } else {
+            doWrite(extractText(document.body));
+        }
+    }
+
+    function doWrite(output) {
+        retryTimer = null;
         navigator.clipboard.writeText(output)
             .then(() => flash('✅ Copied!', '#00897b'))
             .catch(() => {
@@ -156,12 +227,12 @@
             });
     }
 
-    function flash(label, color) {
+    function flash(label, color, durationMs = 2000) {
         btn.innerHTML = label;
         btn.style.background = color;
         setTimeout(() => {
             btn.innerHTML = '📋 Copy All Text';
             btn.style.background = '#6200ea';
-        }, 2000);
+        }, durationMs);
     }
 })();
