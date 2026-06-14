@@ -2,7 +2,7 @@
 // @name         Clean Page Text Copier
 // @namespace    http://tampermonkey.net/
 // @version      1.6
-// @description  Expand collapsed content, extract script-embedded modal dialogs, and copy clean text. SPA/React-aware — waits for rendered content, handles client-side navigation. Draggable button.
+// @description  Expand collapsed content, extract script-embedded modal dialogs, and copy clean text. SPA/React-aware - waits for rendered content, handles client-side navigation. Draggable button.
 // @author       Isaac
 // @match        *://*/*
 // @match        *://*.ibm.com/*
@@ -128,8 +128,13 @@
     window.addEventListener('popstate', cancelRetry);
 
     // --- SPA root detection ---
-    // Common SPA mount-point selectors; checked in order of specificity
-    const SPA_SELECTORS = ['#react-app', '#app', '#root', '#__next', '#__nuxt'];
+    // Common SPA mount-point selectors; checked in order of specificity.
+    // IBM Learning-specific containers are listed first as high-priority candidates.
+    const SPA_SELECTORS = [
+        '#layout-level-react-content',
+        '#layout-level-react',
+        '#react-app', '#app', '#root', '#__next', '#__nuxt'
+    ];
 
     function getSpaRoot() {
         for (const sel of SPA_SELECTORS) {
@@ -197,15 +202,31 @@
         return lines.filter((line, i) => line !== lines[i - 1]).join('\n');
     }
 
+    // --- Hidden panel extraction ---
+    // Explicitly walks .tabcontent and .panel-body elements to capture content
+    // that may not have been reached by the main TreeWalker (e.g. deeply nested
+    // collapsed panels). Deduplicates against mainText via a prefix check.
+    function extractHiddenPanels(root, mainText) {
+        const sections = [];
+        root.querySelectorAll('.tabcontent, .panel-body').forEach(el => {
+            const text = extractText(el).trim();
+            if (text.length > 20 && !mainText.includes(text.slice(0, 80))) {
+                sections.push(text);
+            }
+        });
+        return sections.join('\n\n');
+    }
+
     // --- Modal content extraction ---
     // Some pages embed dialog content as HTML strings inside <script> event listeners
-    // (e.g. `element.addEventListener('click', () => { document.dialogMaker(\`...\`) })`).
+    // (e.g. `element.addEventListener('click', () => { document.dialogMaker(\`...\`) })`).    
     // This parses those template literals directly rather than clicking each trigger.
     function extractModalContent(root) {
         const sections = [];
         root.querySelectorAll('script').forEach(script => {
             const src = script.textContent;
-            const matches = [...src.matchAll(/dialogMaker\(`([\s\S]*?)`\)/g)];
+            // \s* allows optional whitespace between closing backtick and paren
+            const matches = [...src.matchAll(/dialogMaker\(`([\s\S]*?)`\s*\)/g)];
             matches.forEach(m => {
                 const tmp = document.createElement('div');
                 tmp.innerHTML = m[1];
@@ -219,7 +240,15 @@
 
     // --- Copy logic ---
     function assembleOutput(root) {
-        const parts = [extractText(root)];
+        const mainText = extractText(root);
+        const parts = [mainText];
+
+        const hiddenPanelText = extractHiddenPanels(root, mainText);
+        if (hiddenPanelText) {
+            parts.push('--- Hidden Panel Content ---');
+            parts.push(hiddenPanelText);
+        }
+
         const modalSections = extractModalContent(root);
         if (modalSections.length > 0) {
             parts.push('--- Modal Content ---');
@@ -232,13 +261,13 @@
         if (hasSpaContainer()) {
             const spaRoot = getSpaRoot();
             if (!spaRoot) {
-                // Content not yet rendered — retry up to 6 times (~9s total)
+                // Content not yet rendered - retry up to 6 times (~9s total)
                 if (retryCount < 6) {
-                    flash('⏳ Loading…', '#e65100');
+                    flash('⏳ Loading...', '#e65100');
                     retryTimer = setTimeout(() => copyAll(retryCount + 1), 1500);
                     return;
                 }
-                // Timed out — fall back to the full document body
+                // Timed out - fall back to the full document body
                 flash('⚠️ Copied (partial)', '#b71c1c', 3000);
                 doWrite(assembleOutput(document.body));
                 return;
