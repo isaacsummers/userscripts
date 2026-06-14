@@ -1,11 +1,10 @@
 // ==UserScript==
 // @name         Clean Page Text Copier
 // @namespace    http://tampermonkey.net/
-// @version      1.7
+// @version      1.8
 // @description  Expand collapsed content, extract script-embedded modal dialogs, and copy clean text. Dynamically finds content root. SPA/React-aware - waits for rendered content, handles client-side navigation. Draggable button.
 // @author       Isaac
 // @match        *://*/*
-// @match        *://*.ibm.com/*
 // @grant        none
 // ==/UserScript==
 
