@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Clean Page Text Copier
 // @namespace    http://tampermonkey.net/
-// @version      1.6
-// @description  Expand collapsed content, extract script-embedded modal dialogs, and copy clean text. SPA/React-aware - waits for rendered content, handles client-side navigation. Draggable button.
+// @version      1.7
+// @description  Expand collapsed content, extract script-embedded modal dialogs, and copy clean text. Dynamically finds content root. SPA/React-aware - waits for rendered content, handles client-side navigation. Draggable button.
 // @author       Isaac
 // @match        *://*/*
 // @match        *://*.ibm.com/*
@@ -12,8 +12,8 @@
 (function () {
     'use strict';
 
-    // Minimum characters in a SPA container to consider the page loaded
-    const SPA_CONTENT_THRESHOLD = 100;
+    // Minimum characters in content root to consider the page loaded
+    const SPA_CONTENT_THRESHOLD = 200;
 
     const btn = document.createElement('button');
     btn.innerHTML = '📋 Copy All Text';
@@ -127,27 +127,25 @@
 
     window.addEventListener('popstate', cancelRetry);
 
-    // --- SPA root detection ---
-    // Common SPA mount-point selectors; checked in order of specificity.
-    // IBM Learning-specific containers are listed first as high-priority candidates.
-    const SPA_SELECTORS = [
-        '#layout-level-react-content',
-        '#layout-level-react',
-        '#react-app', '#app', '#root', '#__next', '#__nuxt'
-    ];
+    // --- Dynamic content root detection ---
+    function findContentRoot() {
+        // 1. Semantic: [role="main"] or <main> with meaningful text
+        const semantic = document.querySelector('[role="main"], main');
+        if (semantic && semantic.innerText.trim().length > 200) return semantic;
 
-    function getSpaRoot() {
-        for (const sel of SPA_SELECTORS) {
-            const el = document.querySelector(sel);
-            if (el && (el.innerText || '').trim().length >= SPA_CONTENT_THRESHOLD) {
-                return el;
-            }
+        // 2. Walk direct children of <body>, find the one with the most text
+        let best = null;
+        let bestLen = 200; // minimum threshold
+        for (const child of document.body.children) {
+            const tag = child.tagName.toLowerCase();
+            if (['script','style','noscript','link','meta','header','footer','nav'].includes(tag)) continue;
+            const len = (child.innerText || '').trim().length;
+            if (len > bestLen) { bestLen = len; best = child; }
         }
-        return null;
-    }
+        if (best) return best;
 
-    function hasSpaContainer() {
-        return SPA_SELECTORS.some(sel => document.querySelector(sel));
+        // 3. Fallback: body itself
+        return document.body;
     }
 
     // --- Text extraction ---
@@ -258,24 +256,20 @@
     }
 
     function copyAll(retryCount = 0) {
-        if (hasSpaContainer()) {
-            const spaRoot = getSpaRoot();
-            if (!spaRoot) {
-                // Content not yet rendered - retry up to 6 times (~9s total)
-                if (retryCount < 6) {
-                    flash('⏳ Loading...', '#e65100');
-                    retryTimer = setTimeout(() => copyAll(retryCount + 1), 1500);
-                    return;
-                }
-                // Timed out - fall back to the full document body
-                flash('⚠️ Copied (partial)', '#b71c1c', 3000);
-                doWrite(assembleOutput(document.body));
+        const root = findContentRoot();
+        if (root === document.body && (document.body.innerText || '').trim().length < 200) {
+            // Content not yet rendered - retry up to 6 times (~9s total)
+            if (retryCount < 6) {
+                flash('⏳ Loading...', '#e65100');
+                retryTimer = setTimeout(() => copyAll(retryCount + 1), 1500);
                 return;
             }
-            doWrite(assembleOutput(spaRoot));
-        } else {
+            // Timed out - copy whatever we have
+            flash('⚠️ Copied (partial)', '#b71c1c', 3000);
             doWrite(assembleOutput(document.body));
+            return;
         }
+        doWrite(assembleOutput(root));
     }
 
     function doWrite(output) {
