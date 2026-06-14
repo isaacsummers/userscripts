@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Clean Page Text Copier
 // @namespace    http://tampermonkey.net/
-// @version      1.5
-// @description  Expand collapsed content and copy clean text. SPA/React-aware — waits for rendered content, handles client-side navigation. Draggable button.
+// @version      1.6
+// @description  Expand collapsed content, extract script-embedded modal dialogs, and copy clean text. SPA/React-aware — waits for rendered content, handles client-side navigation. Draggable button.
 // @author       Isaac
 // @match        *://*/*
 // @match        *://*.ibm.com/*
@@ -163,6 +163,15 @@
             el.setAttribute('aria-hidden', 'false');
         });
 
+        // Force-show tab panels and accordion bodies so their text is reachable
+        root.querySelectorAll('.tabcontent, .tab-pane').forEach(el => {
+            el.style.removeProperty('display');
+        });
+        root.querySelectorAll('.panel-body, .panel-collapse').forEach(el => {
+            el.classList.add('in', 'show');
+            el.style.removeProperty('display');
+        });
+
         const skipTags = new Set(['script', 'style', 'noscript', 'svg', 'head', 'meta', 'link']);
         const walker = document.createTreeWalker(
             root,
@@ -188,7 +197,37 @@
         return lines.filter((line, i) => line !== lines[i - 1]).join('\n');
     }
 
+    // --- Modal content extraction ---
+    // Some pages embed dialog content as HTML strings inside <script> event listeners
+    // (e.g. `element.addEventListener('click', () => { document.dialogMaker(\`...\`) })`).
+    // This parses those template literals directly rather than clicking each trigger.
+    function extractModalContent(root) {
+        const sections = [];
+        root.querySelectorAll('script').forEach(script => {
+            const src = script.textContent;
+            const matches = [...src.matchAll(/dialogMaker\(`([\s\S]*?)`\)/g)];
+            matches.forEach(m => {
+                const tmp = document.createElement('div');
+                tmp.innerHTML = m[1];
+                const title = tmp.querySelector('[slot="title"]')?.textContent?.trim();
+                const body = tmp.querySelector('[slot="content"]')?.textContent?.trim();
+                if (title && body) sections.push(`### ${title}\n${body}`);
+            });
+        });
+        return sections;
+    }
+
     // --- Copy logic ---
+    function assembleOutput(root) {
+        const parts = [extractText(root)];
+        const modalSections = extractModalContent(root);
+        if (modalSections.length > 0) {
+            parts.push('--- Modal Content ---');
+            parts.push(modalSections.join('\n\n'));
+        }
+        return parts.join('\n\n');
+    }
+
     function copyAll(retryCount = 0) {
         if (hasSpaContainer()) {
             const spaRoot = getSpaRoot();
@@ -201,12 +240,12 @@
                 }
                 // Timed out — fall back to the full document body
                 flash('⚠️ Copied (partial)', '#b71c1c', 3000);
-                doWrite(extractText(document.body));
+                doWrite(assembleOutput(document.body));
                 return;
             }
-            doWrite(extractText(spaRoot));
+            doWrite(assembleOutput(spaRoot));
         } else {
-            doWrite(extractText(document.body));
+            doWrite(assembleOutput(document.body));
         }
     }
 
